@@ -1,0 +1,24 @@
+{
+  "manifest_version": 3,
+  "name": "YouTube Live/Twitch チャットオーバーレイ",
+  "description": "YouTube Live・Twitchのライブチャットを配信画面上にオーバーレイ表示します。",
+  "version": "1.0.0",
+  "permissions": ["storage"],
+  "host_permissions": ["https://www.youtube.com/*"],
+  "content_scripts": [
+    {
+      "matches": ["https://www.youtube.com/watch*"],
+      "js": ["overlay.js", "sites/youtube.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["https://www.youtube.com/live_chat*"],
+      "js": ["sites/youtube.js"],
+      "run_at": "document_idle",
+      "all_frames": true
+    }
+  ],
+  "action": {
+    "default_popup": "popup.html"
+  }
+}

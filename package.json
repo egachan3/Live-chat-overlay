@@ -1,0 +1,13 @@
+{
+  "name": "live-chat-overlay",
+  "private": true,
+  "version": "0.1.0",
+  "description": "YouTube Live・Twitchのライブチャットを配信画面上にオーバーレイ表示するChrome拡張機能",
+  "scripts": {
+    "build": "tsc"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3",
+    "@types/chrome": "^0.2.1"
+  }
+}

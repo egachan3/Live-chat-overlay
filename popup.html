@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8" />
+<title>ライブチャットオーバーレイ設定</title>
+<style>
+  body {
+    margin: 0;
+    padding: 16px;
+    width: 240px;
+    font-family: sans-serif;
+    font-size: 14px;
+    color: #222;
+  }
+  h1 {
+    font-size: 14px;
+    margin: 0 0 12px;
+  }
+  .row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 16px;
+  }
+  .row label {
+    font-weight: bold;
+  }
+
+  /* トグルスイッチ */
+  .switch {
+    position: relative;
+    display: inline-block;
+    width: 40px;
+    height: 22px;
+    flex-shrink: 0;
+  }
+  .switch input {
+    opacity: 0;
+    width: 0;
+    height: 0;
+  }
+  .switch .slider {
+    position: absolute;
+    cursor: pointer;
+    inset: 0;
+    background-color: #ccc;
+    border-radius: 999px;
+    transition: background-color 0.15s;
+  }
+  .switch .slider::before {
+    content: "";
+    position: absolute;
+    width: 16px;
+    height: 16px;
+    left: 3px;
+    top: 3px;
+    background-color: #fff;
+    border-radius: 50%;
+    transition: transform 0.15s;
+  }
+  .switch input:checked + .slider {
+    background-color: #4caf50;
+  }
+  .switch input:checked + .slider::before {
+    transform: translateX(18px);
+  }
+
+  .font-size-section {
+    margin-bottom: 16px;
+  }
+  .font-size-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 4px;
+  }
+  #fontSizeRange {
+    width: 100%;
+  }
+
+  .display-mode-section {
+    margin-bottom: 4px;
+  }
+  .display-mode-section > span {
+    font-weight: bold;
+    display: block;
+    margin-bottom: 4px;
+  }
+  .display-mode-option {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 4px;
+  }
+  .display-mode-option label {
+    font-weight: normal;
+  }
+
+  .stack-position-section {
+    margin-bottom: 4px;
+    transition: opacity 0.15s;
+  }
+  .stack-position-section > span {
+    font-weight: bold;
+    display: block;
+    margin-bottom: 4px;
+  }
+  .stack-position-option {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 4px;
+  }
+  .stack-position-option label {
+    font-weight: normal;
+  }
+  /* 流れる型選択中は、積み上げ型専用の設定であることが分かるようグレーアウトする */
+  .stack-position-section.stack-position-disabled {
+    opacity: 0.4;
+    pointer-events: none;
+  }
+</style>
+</head>
+<body>
+  <h1>ライブチャットオーバーレイ</h1>
+
+  <div class="row">
+    <span>表示ON/OFF</span>
+    <label class="switch">
+      <input type="checkbox" id="enabledToggle" />
+      <span class="slider"></span>
+    </label>
+  </div>
+
+  <div class="font-size-section">
+    <div class="font-size-header">
+      <label for="fontSizeRange">文字サイズ</label>
+      <span id="fontSizeValue">16px</span>
+    </div>
+    <input type="range" id="fontSizeRange" min="12" max="32" step="1" value="16" />
+  </div>
+
+  <div class="display-mode-section">
+    <span>表示スタイル</span>
+    <div class="display-mode-option">
+      <input type="radio" name="displayMode" id="displayModeStack" value="stack" />
+      <label for="displayModeStack">積み上げ型</label>
+    </div>
+    <div class="display-mode-option">
+      <input type="radio" name="displayMode" id="displayModeFlow" value="flow" />
+      <label for="displayModeFlow">横スクロール型</label>
+    </div>
+  </div>
+
+  <div class="stack-position-section" id="stackPositionSection">
+    <span>表示位置（積み上げ型）</span>
+    <div class="stack-position-option">
+      <input type="radio" name="stackPosition" id="stackPositionLeft" value="left" />
+      <label for="stackPositionLeft">動画の左側</label>
+    </div>
+    <div class="stack-position-option">
+      <input type="radio" name="stackPosition" id="stackPositionRight" value="right" />
+      <label for="stackPositionRight">動画の右側</label>
+    </div>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

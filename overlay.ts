@@ -1,0 +1,873 @@
+/**
+ * overlay.ts
+ *
+ * ライブチャットオーバーレイの描画・設定管理を担当するモジュール。
+ *
+ * - module: "None" 構成のため import/export は使用不可。
+ * - sites/youtube.ts などのサイト固有スクリプトから呼び出せるよう、
+ *   グローバル名前空間 `LiveChatOverlay` として公開する。
+ * - manifest.json の content_scripts で overlay.js → sites/youtube.js の順に
+ *   同一グローバルスコープへ読み込まれる想定。
+ */
+
+/** 拡張機能公開APIの型定義（他ファイルからの参照用） */
+interface LiveChatOverlayApi {
+  /** コメントを1件追加して描画する */
+  addComment(author: string, text: string): void;
+  /**
+   * オーバーレイの位置・サイズ計算の基準となる動画要素を外部から指定・更新する。
+   * SPA遷移などで動画要素が後から出現する場合、sites/youtube.ts側の
+   * MutationObserverが検知したタイミングで呼び出す想定。
+   * オーバーレイ側はこの要素の getBoundingClientRect() を基に
+   * position: fixed で自身を配置するため、動画要素本体のスタイルは一切書き換えない。
+   */
+  setVideoElement(el: HTMLVideoElement): void;
+  /**
+   * 別配信への切り替わりを検知した際に、表示中のコメントをすべてクリアする。
+   * sites/youtube.ts側で、ネイティブチャットiframeの実際の読み込みURL
+   * （contentWindow.location.href）の変化を「本当に別の配信に切り替わったか」の
+   * 判定材料として利用し、変化を検知したタイミングで呼び出す想定。
+   * <video>要素自体は使い回され、中身（配信内容）だけが差し替わるケース
+   * （setVideoElement側のchanged判定ではfalseになるケース）に対応するための入口。
+   */
+  resetForNewStream(): void;
+}
+
+// window にぶら下げる公開名前空間の型を拡張しておく。
+// これにより sites/youtube.ts 側でも `LiveChatOverlay.addComment(...)` を型安全に呼べる。
+interface Window {
+  LiveChatOverlay: LiveChatOverlayApi;
+}
+
+(function (): void {
+  "use strict";
+
+  /** chrome.storage.local に保存する設定のキー */
+  const STORAGE_KEY_ENABLED = "enabled";
+  const STORAGE_KEY_FONT_SIZE = "fontSize";
+  const STORAGE_KEY_DISPLAY_MODE = "displayMode";
+  const STORAGE_KEY_STACK_POSITION = "stackPosition";
+
+  /** 文字サイズの範囲・デフォルト値 */
+  const DEFAULT_ENABLED = true;
+  const DEFAULT_FONT_SIZE = 16;
+  const MIN_FONT_SIZE = 12;
+  const MAX_FONT_SIZE = 32;
+
+  /** 表示スタイルの型・デフォルト値 */
+  type DisplayMode = "stack" | "flow";
+  const DEFAULT_DISPLAY_MODE: DisplayMode = "stack";
+
+  /** 積み上げ型の表示位置（動画に対して右/左）の型・デフォルト値 */
+  type StackPosition = "right" | "left";
+  const DEFAULT_STACK_POSITION: StackPosition = "left";
+
+  /** オーバーレイのDOM要素ID・クラス名 */
+  const OVERLAY_WRAPPER_ID = "live-chat-overlay-wrapper";
+  const OVERLAY_ROOT_ID = "live-chat-overlay-root";
+  const FLOW_ROOT_ID = "live-chat-overlay-flow-root";
+  const COMMENT_LIST_CLASS = "live-chat-overlay-list";
+  const COMMENT_ITEM_CLASS = "live-chat-overlay-item";
+  const FLOW_ITEM_CLASS = "live-chat-overlay-flow-item";
+  const STYLE_ELEMENT_ID = "live-chat-overlay-style";
+
+  /** 流れる型：画面横断にかける固定時間（ミリ秒） */
+  const FLOW_DURATION_MS = 7000;
+  /** 流れる型：1行あたりの高さを計算する際の行間係数 */
+  const FLOW_LINE_HEIGHT_FACTOR = 1.4;
+
+  /** 現在の設定値（storageから読み込み後に更新される） */
+  let currentEnabled = DEFAULT_ENABLED;
+  let currentFontSize = DEFAULT_FONT_SIZE;
+  let currentDisplayMode: DisplayMode = DEFAULT_DISPLAY_MODE;
+  let currentStackPosition: StackPosition = DEFAULT_STACK_POSITION;
+
+  /**
+   * オーバーレイの位置・サイズ計算の基準となる動画要素。
+   * sites/youtube.ts側から setVideoElement() で指定される。
+   */
+  let videoEl: HTMLVideoElement | null = null;
+
+  /** 動画要素のサイズ変化を監視する ResizeObserver（動画要素が判明してから生成する） */
+  let resizeObserver: ResizeObserver | null = null;
+  /**
+   * 動画要素の画面内可視性を監視する IntersectionObserver
+   * （動画要素が判明してから生成する）。
+   * スクロールで動画要素が画面外に出た際、position: fixed のオーバーレイが
+   * 座標だけを追従して他のUIに重なって表示され続けてしまう問題への対応。
+   */
+  let intersectionObserver: IntersectionObserver | null = null;
+
+  /**
+   * 動画要素が画面内にどれだけでも見えているかどうか。
+   * IntersectionObserver 生成前（動画要素未判明時）は true 扱いとし、
+   * ユーザー設定（currentEnabled）側の判定のみが効くようにする。
+   */
+  let isVideoIntersecting = true;
+
+  /** オーバーレイ専用のラッパー要素（position: absolute を持つ自前div）への参照 */
+  let overlayWrapperEl: HTMLDivElement | null = null;
+  /** オーバーレイのルート要素（積み上げ型）・コメントリスト要素への参照 */
+  let overlayRootEl: HTMLDivElement | null = null;
+  let commentListEl: HTMLDivElement | null = null;
+  /** 流れる型専用のルート要素（幅100%、積み上げ型とは別コンテナ）への参照 */
+  let flowRootEl: HTMLDivElement | null = null;
+
+  /**
+   * 流れる型のレーン（行）管理。
+   * 各要素は「そのレーンが次に使用可能になる時刻（performance.now()基準）」。
+   * 配列のインデックスがそのままレーン番号（＝表示するY座標の行番号）に対応する。
+   */
+  let flowLaneAvailableAt: number[] = [];
+
+  /**
+   * scroll イベントを requestAnimationFrame でスロットリングするための
+   * 予約済みフレームID。null の場合は次の scroll 発火時に新規予約する。
+   * 同一フレーム中に複数回 scroll が発火しても updateOverlayPosition() の
+   * 呼び出しは1回にまとめられる。
+   */
+  let scrollUpdateRafId: number | null = null;
+
+  /**
+   * 動画要素切り替え直後の追加座標再計算（requestAnimationFrame連続実行）を
+   * キャンセルするためのID。新たな切り替えが発生した場合、前回分の
+   * 再計算ループを止めてから新しいループを開始する。
+   */
+  let videoChangeRafId: number | null = null;
+  /**
+   * 動画要素切り替え直後の追加座標再計算（setTimeout）のIDリスト。
+   * 新たな切り替えが発生した場合、前回分をすべてクリアする。
+   */
+  let videoChangeTimeoutIds: number[] = [];
+
+  /**
+   * オーバーレイ全体のスタイルを定義する <style> 要素を挿入する。
+   * すでに存在する場合は何もしない。
+   */
+  function ensureStyleElement(): void {
+    if (document.getElementById(STYLE_ELEMENT_ID)) {
+      return;
+    }
+    const style = document.createElement("style");
+    style.id = STYLE_ELEMENT_ID;
+    style.textContent = `
+      #${OVERLAY_WRAPPER_ID} {
+        /* 動画コンテナ側のスタイル（position等）には一切依存せず、
+           ビューポート基準の position: fixed で自身の位置・サイズを直接指定する。
+           top/left/width/height の実際の値は JS 側で動画要素の
+           getBoundingClientRect() から都度計算して設定する。 */
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 0;
+        height: 0;
+        pointer-events: none;
+        /* YouTubeヘッダー（#masthead-container）の z-index: 2020 より低い値にする。
+           z-index の数値が明確に異なる場合、CSSの重なり順はDOM順序に関係なく
+           数値が大きい方が勝つため、通常コンテンツより上・ヘッダーより下となる
+           値を指定することでヘッダーへの重なりを防ぐ。 */
+        z-index: 2000;
+        overflow: hidden;
+      }
+      #${OVERLAY_ROOT_ID} {
+        position: absolute;
+        top: 0;
+        right: 0;
+        left: auto;
+        width: 22%;
+        height: 100%;
+        pointer-events: none;
+        display: flex;
+        align-items: flex-end;
+        overflow: hidden;
+        box-sizing: border-box;
+      }
+      #${OVERLAY_ROOT_ID}.live-chat-overlay-position-left {
+        right: auto;
+        left: 0;
+      }
+      #${OVERLAY_ROOT_ID}.live-chat-overlay-hidden,
+      #${OVERLAY_ROOT_ID}.live-chat-overlay-offscreen,
+      #${OVERLAY_ROOT_ID}.live-chat-overlay-mode-inactive {
+        display: none;
+      }
+      #${FLOW_ROOT_ID} {
+        position: absolute;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        pointer-events: none;
+        overflow: hidden;
+        box-sizing: border-box;
+      }
+      #${FLOW_ROOT_ID}.live-chat-overlay-hidden,
+      #${FLOW_ROOT_ID}.live-chat-overlay-offscreen,
+      #${FLOW_ROOT_ID}.live-chat-overlay-mode-inactive {
+        display: none;
+      }
+      .${COMMENT_LIST_CLASS} {
+        display: flex;
+        flex-direction: column;
+        justify-content: flex-end;
+        width: 100%;
+        height: 100%;
+        overflow: hidden;
+        padding: 4px 8px;
+        box-sizing: border-box;
+        pointer-events: none;
+      }
+      .${COMMENT_ITEM_CLASS} {
+        color: #ffffff;
+        text-shadow:
+          -1px -1px 0 #000,
+          1px -1px 0 #000,
+          -1px 1px 0 #000,
+          1px 1px 0 #000;
+        font-family: sans-serif;
+        line-height: 1.4;
+        word-break: break-word;
+        margin-top: 2px;
+      }
+      .${FLOW_ITEM_CLASS} {
+        position: absolute;
+        left: 0;
+        white-space: nowrap;
+        color: #ffffff;
+        text-shadow:
+          -1px -1px 0 #000,
+          1px -1px 0 #000,
+          -1px 1px 0 #000,
+          1px 1px 0 #000;
+        font-family: sans-serif;
+        will-change: transform;
+      }
+    `;
+    document.head.appendChild(style);
+  }
+
+  /**
+   * オーバーレイのルート要素・ラッパー要素を生成する（未生成の場合のみ）。
+   */
+  function createOverlayElement(): HTMLDivElement {
+    if (overlayRootEl) {
+      return overlayRootEl;
+    }
+
+    ensureStyleElement();
+
+    // オーバーレイ専用のラッパー要素。position: absolute はこの自前div側にのみ
+    // 設定し、動画コンテナ本体のスタイルは書き換えない（YouTube本体のレイアウトへの
+    // 影響を避けるため）。
+    const wrapper = document.createElement("div");
+    wrapper.id = OVERLAY_WRAPPER_ID;
+
+    const root = document.createElement("div");
+    root.id = OVERLAY_ROOT_ID;
+
+    const list = document.createElement("div");
+    list.className = COMMENT_LIST_CLASS;
+    root.appendChild(list);
+    wrapper.appendChild(root);
+
+    // 流れる型専用のルート要素（幅100%）。積み上げ型（root）とは別コンテナとし、
+    // 現在の表示モードに応じてどちらか一方だけを表示する。
+    const flowRoot = document.createElement("div");
+    flowRoot.id = FLOW_ROOT_ID;
+    wrapper.appendChild(flowRoot);
+
+    overlayWrapperEl = wrapper;
+    overlayRootEl = root;
+    commentListEl = list;
+    flowRootEl = flowRoot;
+
+    applyFontSize(currentFontSize);
+    applyEnabled(currentEnabled);
+    applyVisibility();
+    applyDisplayMode(currentDisplayMode);
+    applyStackPosition(currentStackPosition);
+
+    attachOverlayToDom();
+
+    return root;
+  }
+
+  /**
+   * オーバーレイ用ラッパー要素をDOMツリーに配置する。
+   * position: fixed で自身の座標を直接指定する方式のため、配置先の親要素の
+   * position・レイアウトには依存しない。通常時は document.body に、
+   * 全画面表示中は全画面要素の子として配置する（Fullscreen APIの制約対応）。
+   * 親要素自体のスタイルは一切書き換えない。
+   *
+   * ヘッダーとの重なり順は z-index（#${OVERLAY_WRAPPER_ID} の z-index: 2000、
+   * YouTubeヘッダー #masthead-container の z-index: 2020）で制御しているため、
+   * DOM挿入順序（先頭/末尾）は重なり順に影響しない。通常時・全画面時ともに
+   * appendChild で配置先の子要素として追加すればよい。
+   */
+  function attachOverlayToDom(): void {
+    if (!overlayWrapperEl) {
+      return;
+    }
+    const parent = document.fullscreenElement ?? document.body;
+    if (overlayWrapperEl.parentElement !== parent) {
+      parent.appendChild(overlayWrapperEl);
+    }
+  }
+
+  /**
+   * 動画要素の getBoundingClientRect() を基に、オーバーレイラッパーの
+   * position: fixed 用座標（top/left/width/height）を計算して反映する。
+   * 動画コンテナ本体のDOM・スタイルには一切触れない。
+   */
+  function updateOverlayPosition(): void {
+    if (!overlayWrapperEl || !videoEl) {
+      return;
+    }
+    const rect = videoEl.getBoundingClientRect();
+    overlayWrapperEl.style.top = `${rect.top}px`;
+    overlayWrapperEl.style.left = `${rect.left}px`;
+    overlayWrapperEl.style.width = `${rect.width}px`;
+    overlayWrapperEl.style.height = `${rect.height}px`;
+  }
+
+  /**
+   * scroll イベント発生時に呼び出すハンドラ。
+   * YouTubeは内部に複数のスクロールコンテナを持つ可能性があるため、window
+   * には capture: true で登録し、どのコンテナのスクロールでも拾えるようにする。
+   * scroll は高頻度で発火するため、直接 updateOverlayPosition() を呼ばず
+   * requestAnimationFrame でスロットリングする（1フレームにつき最大1回の実行）。
+   */
+  function scheduleUpdateOverlayPosition(): void {
+    if (scrollUpdateRafId !== null) {
+      return;
+    }
+    scrollUpdateRafId = requestAnimationFrame(() => {
+      scrollUpdateRafId = null;
+      updateOverlayPosition();
+    });
+  }
+
+  /**
+   * 動画要素を基準にオーバーレイの位置決めを開始する。
+   * ResizeObserver で動画要素のサイズ変化（ウィンドウリサイズ・全画面切り替え・
+   * レイアウト変更等）を監視し、変化のたびに座標を再計算する。
+   */
+  function observeVideoElement(el: HTMLVideoElement): void {
+    resizeObserver?.disconnect();
+    resizeObserver = new ResizeObserver(() => {
+      updateOverlayPosition();
+    });
+    resizeObserver.observe(el);
+    updateOverlayPosition();
+
+    observeVideoIntersection(el);
+  }
+
+  /**
+   * 動画要素切り替え直後、短期間だけ追加で座標の再計算を行う。
+   *
+   * SPA遷移直後は動画要素自体のサイズが変わらないままページ全体の
+   * レイアウトが後から確定するケースがあり、その場合 ResizeObserver は
+   * 発火しないため、getBoundingClientRect() の結果が古いままになり
+   * オーバーレイの位置がずれて見える（スクロールするまで直らない）。
+   * これを避けるため、切り替え直後の数フレーム・数百msにわたって
+   * updateOverlayPosition() を追加実行し、レイアウト確定後の座標に
+   * 追従させる。
+   */
+  function scheduleVideoChangeRecalculation(): void {
+    // 前回の動画切り替えに伴う再計算がまだ残っていればキャンセルする
+    if (videoChangeRafId !== null) {
+      cancelAnimationFrame(videoChangeRafId);
+      videoChangeRafId = null;
+    }
+    for (const timeoutId of videoChangeTimeoutIds) {
+      clearTimeout(timeoutId);
+    }
+    videoChangeTimeoutIds = [];
+
+    // 数フレーム連続で再計算する（直後の細かいレイアウト変化に追従するため）
+    const RAF_REPEAT_COUNT = 10;
+    let rafCount = 0;
+    const rafStep = (): void => {
+      updateOverlayPosition();
+      rafCount++;
+      if (rafCount < RAF_REPEAT_COUNT) {
+        videoChangeRafId = requestAnimationFrame(rafStep);
+      } else {
+        videoChangeRafId = null;
+      }
+    };
+    videoChangeRafId = requestAnimationFrame(rafStep);
+
+    // rAFループより長いスパンで発生するレイアウトシフト（画像・広告等の
+    // 読み込み完了タイミング）にも追従できるよう、数百ms後にも再計算する
+    const DELAYS_MS = [100, 300, 500, 1000];
+    for (const delay of DELAYS_MS) {
+      const timeoutId = window.setTimeout(() => {
+        updateOverlayPosition();
+      }, delay);
+      videoChangeTimeoutIds.push(timeoutId);
+    }
+  }
+
+  /**
+   * 動画要素切り替え時、前の配信のコメント表示を引き継がないよう
+   * オーバーレイをクリーンアップする。
+   * - 積み上げ型：コメント一覧のDOM要素の中身をすべて削除する
+   * - 流れる型：アニメーション中のコメント要素をすべて削除する。
+   *   Web Animations APIの仕様上、要素をDOMから切り離しても進行中の
+   *   Animationオブジェクト自体は自動キャンセルされないが、
+   *   animation.finished解決時に呼ばれるitem.remove()は既にDOM外に
+   *   ある要素への無害なno-opになるだけなので実害はない。
+   *   あわせてレーンの空き状況（flowLaneAvailableAt）もリセットし、
+   *   前の配信のタイミング情報を引き継がないようにする。
+   */
+  function resetOverlayContent(): void {
+    if (commentListEl) {
+      commentListEl.replaceChildren();
+    }
+    if (flowRootEl) {
+      flowRootEl.replaceChildren();
+    }
+    flowLaneAvailableAt = [];
+  }
+
+  /**
+   * 動画要素の画面内可視性を IntersectionObserver で監視する。
+   * threshold: 0 とすることで「1pxでも画面内にあれば表示」というシンプルな
+   * 判定にしている。動画要素が画面外に出た場合はオーバーレイを隠し、
+   * 画面内に戻ったらユーザー設定がONであれば再表示する。
+   */
+  function observeVideoIntersection(el: HTMLVideoElement): void {
+    intersectionObserver?.disconnect();
+    intersectionObserver = new IntersectionObserver(
+      (entries) => {
+        const entry = entries[entries.length - 1];
+        if (!entry) {
+          return;
+        }
+        isVideoIntersecting = entry.isIntersecting;
+        applyVisibility();
+      },
+      { threshold: 0 }
+    );
+    intersectionObserver.observe(el);
+  }
+
+  /**
+   * オーバーレイの位置・サイズ計算の基準となる動画要素を外部（sites/youtube.tsなど）
+   * から指定する。SPA遷移で動画要素が入れ替わった場合も、検知の都度呼び出すことで
+   * 追従させる。
+   */
+  function setVideoElement(el: HTMLVideoElement): void {
+    if (!(el instanceof HTMLVideoElement)) {
+      return;
+    }
+    const changed = videoEl !== el;
+    videoEl = el;
+    if (!overlayRootEl) {
+      // 初回呼び出し時はここで生成するが、return はせず後続の
+      // observeVideoElement() 呼び出しまで必ず到達させる
+      // （そうしないと座標計算・ResizeObserver登録が一度も行われない）。
+      createOverlayElement();
+    }
+    if (changed) {
+      resetOverlayContent();
+      observeVideoElement(el);
+      scheduleVideoChangeRecalculation();
+    }
+  }
+
+  /**
+   * 別配信への切り替わりを検知した際に外部（sites/youtube.tsなど）から呼び出す公開API。
+   * 既存の resetOverlayContent() をそのまま呼ぶだけで、前の配信のコメント表示
+   * （積み上げ型・流れる型）とレーン状態をクリアする。
+   */
+  function resetForNewStream(): void {
+    resetOverlayContent();
+  }
+
+  /**
+   * 全画面表示切り替え時のハンドラ。
+   * Fullscreen API使用中は通常のDOM子要素が表示されなくなるため、
+   * オーバーレイ要素を全画面要素の子として再配置し、座標も再計算する。
+   */
+  function handleFullscreenChange(): void {
+    if (!overlayWrapperEl) {
+      return;
+    }
+    attachOverlayToDom();
+    updateOverlayPosition();
+  }
+
+  /**
+   * 文字サイズをオーバーレイに反映する。
+   */
+  function applyFontSize(fontSize: number): void {
+    currentFontSize = fontSize;
+    if (commentListEl) {
+      commentListEl.style.fontSize = `${fontSize}px`;
+    }
+    if (flowRootEl) {
+      flowRootEl.style.fontSize = `${fontSize}px`;
+    }
+  }
+
+  /**
+   * ON/OFF設定をオーバーレイに反映する。
+   * 表示スタイル（積み上げ型／流れる型）に関係なく、両方のコンテナに共通して
+   * 適用する（表示/非表示の制御ロジックとモードの違いは独立させるため）。
+   */
+  function applyEnabled(enabled: boolean): void {
+    currentEnabled = enabled;
+    overlayRootEl?.classList.toggle("live-chat-overlay-hidden", !enabled);
+    flowRootEl?.classList.toggle("live-chat-overlay-hidden", !enabled);
+  }
+
+  /**
+   * 動画要素の画面内可視性をオーバーレイに反映する。
+   * 「ユーザー設定でOFF」（live-chat-overlay-hidden）とは別クラスで管理し、
+   * どちらか一方でも該当すればCSS上は非表示になる（互いに競合しない）。
+   * こちらも表示スタイルに関係なく両方のコンテナに共通して適用する。
+   */
+  function applyVisibility(): void {
+    overlayRootEl?.classList.toggle(
+      "live-chat-overlay-offscreen",
+      !isVideoIntersecting
+    );
+    flowRootEl?.classList.toggle(
+      "live-chat-overlay-offscreen",
+      !isVideoIntersecting
+    );
+  }
+
+  /**
+   * 表示スタイル（積み上げ型／流れる型）をオーバーレイに反映する。
+   * 選択中でない方のコンテナは非表示クラスで隠す。
+   * ON/OFF・オフスクリーン判定用のクラス（live-chat-overlay-hidden /
+   * live-chat-overlay-offscreen）と同じ「非表示クラスの付与」という形に揃えることで、
+   * CSS詳細度の競合（インラインstyleとの優先度逆転）を避ける。
+   */
+  function applyDisplayMode(mode: DisplayMode): void {
+    currentDisplayMode = mode;
+    overlayRootEl?.classList.toggle(
+      "live-chat-overlay-mode-inactive",
+      mode !== "stack"
+    );
+    flowRootEl?.classList.toggle(
+      "live-chat-overlay-mode-inactive",
+      mode !== "flow"
+    );
+  }
+
+  /**
+   * 積み上げ型の表示位置（動画に対して右/左）をオーバーレイに反映する。
+   * ON/OFF・表示スタイルと同様に、非表示クラス方式ではなく専用クラスの
+   * 付与/除去で切り替えることで、インラインstyleとのCSS詳細度競合を避ける。
+   */
+  function applyStackPosition(position: StackPosition): void {
+    currentStackPosition = position;
+    overlayRootEl?.classList.toggle(
+      "live-chat-overlay-position-left",
+      position === "left"
+    );
+  }
+
+  /**
+   * 文字サイズを有効範囲内にクランプする。
+   */
+  function clampFontSize(fontSize: number): number {
+    if (Number.isNaN(fontSize)) {
+      return DEFAULT_FONT_SIZE;
+    }
+    return Math.min(MAX_FONT_SIZE, Math.max(MIN_FONT_SIZE, fontSize));
+  }
+
+  /**
+   * パネルの高さが埋まっている間、古いコメントから削除する。
+   * 固定行数ではなく実際の高さ（scrollHeight vs clientHeight）で判定する。
+   */
+  function trimOldComments(): void {
+    if (!commentListEl) {
+      return;
+    }
+    // clientHeight が 0 の場合（レイアウト未確定・非表示状態など）は
+    // 高さ基準の判定が機能せず、削除処理が全コメントを消し去ってしまう
+    // （＝永久に表示されなくなる）おそれがあるため、判定自体をスキップする。
+    if (commentListEl.clientHeight === 0) {
+      return;
+    }
+    while (
+      commentListEl.children.length > 0 &&
+      commentListEl.scrollHeight > commentListEl.clientHeight
+    ) {
+      commentListEl.removeChild(commentListEl.children[0]);
+    }
+  }
+
+  /**
+   * コメント本文のみのコメント要素を組み立てる。
+   * 積み上げ型・流れる型で共通のDOM構造を使うための共通処理。
+   * textContent経由で設定することでXSS（HTMLインジェクション）を防止する。
+   */
+  function buildCommentElement(className: string, trimmedText: string): HTMLDivElement {
+    const item = document.createElement("div");
+    item.className = className;
+    item.textContent = trimmedText;
+    return item;
+  }
+
+  /**
+   * 積み上げ型のコメント描画処理。
+   */
+  function addCommentStack(trimmedText: string): void {
+    if (!commentListEl) {
+      return;
+    }
+    const item = buildCommentElement(COMMENT_ITEM_CLASS, trimmedText);
+    commentListEl.appendChild(item);
+    trimOldComments();
+  }
+
+  /**
+   * 流れる型（弾幕方式）：現在のパネル高さ・文字サイズから確保できる
+   * レーン数を計算する。最低1行は確保する。
+   */
+  function getFlowLaneCount(): number {
+    if (!flowRootEl) {
+      return 1;
+    }
+    const panelHeight = flowRootEl.clientHeight;
+    const lineHeight = currentFontSize * FLOW_LINE_HEIGHT_FACTOR;
+    if (panelHeight <= 0 || lineHeight <= 0) {
+      return 1;
+    }
+    return Math.max(1, Math.floor(panelHeight / lineHeight));
+  }
+
+  /**
+   * 流れる型（弾幕方式）：新しいコメントを流すレーン（行番号）を選ぶ。
+   * 空いている（現在時刻時点で使用可能な）レーンがあればそれを使い、
+   * なければ最も早く空く見込みのレーンを使う。
+   */
+  function pickFlowLane(now: number): number {
+    const laneCount = getFlowLaneCount();
+    // レーン数が変化した場合（文字サイズ変更・パネルリサイズ等）に合わせて配列を調整する
+    if (flowLaneAvailableAt.length !== laneCount) {
+      const next = new Array<number>(laneCount).fill(0);
+      for (let i = 0; i < Math.min(laneCount, flowLaneAvailableAt.length); i++) {
+        next[i] = flowLaneAvailableAt[i];
+      }
+      flowLaneAvailableAt = next;
+    }
+
+    let bestLane = 0;
+    let bestAvailableAt = Infinity;
+    for (let i = 0; i < flowLaneAvailableAt.length; i++) {
+      const availableAt = flowLaneAvailableAt[i];
+      if (availableAt <= now) {
+        // 即座に使える空きレーンが見つかったのでそれを採用する
+        return i;
+      }
+      if (availableAt < bestAvailableAt) {
+        bestAvailableAt = availableAt;
+        bestLane = i;
+      }
+    }
+    // 空きレーンがなければ、最も早く空く見込みのレーンを使う
+    return bestLane;
+  }
+
+  /**
+   * 流れる型（弾幕方式）のコメント描画処理。
+   * 画面右端から左端まで固定時間（FLOW_DURATION_MS）で流れるアニメーションを
+   * Web Animations API（Element.animate）で実装する。
+   */
+  function addCommentFlow(trimmedText: string): void {
+    if (!flowRootEl) {
+      return;
+    }
+    const containerWidth = flowRootEl.clientWidth;
+    if (containerWidth <= 0) {
+      return;
+    }
+
+    const item = buildCommentElement(FLOW_ITEM_CLASS, trimmedText);
+    flowRootEl.appendChild(item);
+
+    const now = performance.now();
+    const laneIndex = pickFlowLane(now);
+    const lineHeight = currentFontSize * FLOW_LINE_HEIGHT_FACTOR;
+    item.style.top = `${laneIndex * lineHeight}px`;
+
+    // DOM追加直後でないと offsetWidth が正しく測れないため、appendChild後に計測する
+    const itemWidth = item.offsetWidth;
+
+    // 開始位置：コンテナ幅分右にオフセット（画面右端の外側からスタート）
+    // 終了位置：コメント自身の表示幅分左にオフセット（画面左端の外側まで流れきる）
+    const animation = item.animate(
+      [
+        { transform: `translateX(${containerWidth}px)` },
+        { transform: `translateX(-${itemWidth}px)` },
+      ],
+      {
+        duration: FLOW_DURATION_MS,
+        easing: "linear",
+        fill: "forwards",
+      }
+    );
+
+    // アニメーション終了後、DOMから要素を削除する
+    animation.finished
+      .then(() => {
+        item.remove();
+      })
+      .catch(() => {
+        // cancel()等でPromiseがrejectされた場合も念のため要素を削除しておく
+        item.remove();
+      });
+
+    // レーンの解放時刻：このコメントの末尾（右端）が、次のコメントのスタート地点
+    // （画面右端＝コンテナ右端）を完全に通過し終えるまでの時間を目安に計算する。
+    // 要素は (containerWidth + itemWidth) の距離を FLOW_DURATION_MS かけて移動するので、
+    // 移動速度は speed = (containerWidth + itemWidth) / FLOW_DURATION_MS。
+    // 末尾がスタート地点（画面右端、移動距離 itemWidth の時点）を通過し終えるまでの
+    // 所要時間は itemWidth / speed であり、これを占有時間とすることで、
+    // 表示幅の短いコメントほど早くレーンが解放される（衝突防止の簡易な近似）。
+    const speed = (containerWidth + itemWidth) / FLOW_DURATION_MS;
+    const occupancyMs = speed > 0 ? itemWidth / speed : FLOW_DURATION_MS;
+    if (laneIndex >= 0 && laneIndex < flowLaneAvailableAt.length) {
+      flowLaneAvailableAt[laneIndex] = now + occupancyMs;
+    }
+  }
+
+  /**
+   * コメントを1件追加して描画する。
+   * sites/youtube.ts など、サイト固有のDOM監視スクリプトから呼び出される公開API。
+   * 現在の表示モード（積み上げ型／流れる型）に応じて描画処理を分岐させる。
+   */
+  function addComment(author: string, text: string): void {
+    // 入力値のバリデーション：文字列以外・空文字は無視する
+    // author は公開API・データ取得側のシグネチャ維持のため引数として受け取るが、
+    // 画面描画では使用しない（表示するのはコメント本文のみ）。
+    if (typeof author !== "string" || typeof text !== "string") {
+      return;
+    }
+    const trimmedText = text.trim();
+    if (trimmedText.length === 0) {
+      return;
+    }
+
+    if (!overlayRootEl || !commentListEl || !flowRootEl) {
+      createOverlayElement();
+    }
+
+    if (currentDisplayMode === "flow") {
+      addCommentFlow(trimmedText);
+    } else {
+      addCommentStack(trimmedText);
+    }
+  }
+
+  /**
+   * 表示スタイルの値を検証し、不正な値であればデフォルトにフォールバックする。
+   */
+  function normalizeDisplayMode(value: unknown): DisplayMode {
+    return value === "flow" || value === "stack" ? value : DEFAULT_DISPLAY_MODE;
+  }
+
+  /**
+   * 積み上げ型の表示位置の値を検証し、不正な値であればデフォルトにフォールバックする。
+   */
+  function normalizeStackPosition(value: unknown): StackPosition {
+    return value === "left" || value === "right" ? value : DEFAULT_STACK_POSITION;
+  }
+
+  /**
+   * chrome.storage.local から設定を読み込み、現在値に反映する。
+   */
+  function loadSettings(): void {
+    chrome.storage.local.get(
+      [
+        STORAGE_KEY_ENABLED,
+        STORAGE_KEY_FONT_SIZE,
+        STORAGE_KEY_DISPLAY_MODE,
+        STORAGE_KEY_STACK_POSITION,
+      ],
+      (items) => {
+        const enabled =
+          typeof items[STORAGE_KEY_ENABLED] === "boolean"
+            ? items[STORAGE_KEY_ENABLED]
+            : DEFAULT_ENABLED;
+        const fontSize = clampFontSize(
+          typeof items[STORAGE_KEY_FONT_SIZE] === "number"
+            ? items[STORAGE_KEY_FONT_SIZE]
+            : DEFAULT_FONT_SIZE
+        );
+        const displayMode = normalizeDisplayMode(items[STORAGE_KEY_DISPLAY_MODE]);
+        const stackPosition = normalizeStackPosition(items[STORAGE_KEY_STACK_POSITION]);
+
+        applyEnabled(enabled);
+        applyFontSize(fontSize);
+        applyDisplayMode(displayMode);
+        applyStackPosition(stackPosition);
+      }
+    );
+  }
+
+  /**
+   * chrome.storage.onChanged を監視し、設定変更をリアルタイムに反映する。
+   */
+  function watchSettingsChanges(): void {
+    chrome.storage.onChanged.addListener((changes, areaName) => {
+      if (areaName !== "local") {
+        return;
+      }
+      if (changes[STORAGE_KEY_ENABLED]) {
+        const newValue = changes[STORAGE_KEY_ENABLED].newValue;
+        applyEnabled(typeof newValue === "boolean" ? newValue : DEFAULT_ENABLED);
+      }
+      if (changes[STORAGE_KEY_FONT_SIZE]) {
+        const newValue = changes[STORAGE_KEY_FONT_SIZE].newValue;
+        applyFontSize(
+          clampFontSize(typeof newValue === "number" ? newValue : DEFAULT_FONT_SIZE)
+        );
+      }
+      if (changes[STORAGE_KEY_DISPLAY_MODE]) {
+        applyDisplayMode(normalizeDisplayMode(changes[STORAGE_KEY_DISPLAY_MODE].newValue));
+      }
+      if (changes[STORAGE_KEY_STACK_POSITION]) {
+        applyStackPosition(
+          normalizeStackPosition(changes[STORAGE_KEY_STACK_POSITION].newValue)
+        );
+      }
+    });
+  }
+
+  /**
+   * 初期化処理：オーバーレイ要素の生成、設定読み込み、イベント監視の開始を行う。
+   */
+  function init(): void {
+    createOverlayElement();
+    loadSettings();
+    watchSettingsChanges();
+    document.addEventListener("fullscreenchange", handleFullscreenChange);
+    // content script は1ページにつき1回しかロードされないため、scroll監視は
+    // ここで一度だけ登録すればよい（動画要素の切り替え時に再登録は不要）。
+    // capture: true により、YouTube内の任意のスクロールコンテナ（ページ本体・
+    // サイドパネル等）でのスクロールを取りこぼさず検知する。
+    window.addEventListener("scroll", scheduleUpdateOverlayPosition, {
+      passive: true,
+      capture: true,
+    });
+  }
+
+  init();
+
+  // sites/youtube.ts などから利用できるようグローバルに公開する
+  window.LiveChatOverlay = {
+    addComment,
+    setVideoElement,
+    resetForNewStream,
+  };
+})();
