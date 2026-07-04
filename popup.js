@@ -17,13 +17,22 @@
     /** chrome.storage.local に保存する設定のキー（overlay.tsと同じ名前を使う） */
     const STORAGE_KEY_ENABLED = "enabled";
     const STORAGE_KEY_FONT_SIZE = "fontSize";
+    const STORAGE_KEY_OPACITY = "opacity";
     const STORAGE_KEY_DISPLAY_MODE = "displayMode";
     const STORAGE_KEY_STACK_POSITION = "stackPosition";
     /** 文字サイズの範囲・デフォルト値（overlay.tsと同じ値を使う） */
     const DEFAULT_ENABLED = true;
-    const DEFAULT_FONT_SIZE = 16;
+    const DEFAULT_FONT_SIZE = 22;
     const MIN_FONT_SIZE = 12;
     const MAX_FONT_SIZE = 32;
+    /**
+     * コメントの不透明度（UI表示用のパーセント整数値）の範囲・デフォルト値。
+     * chrome.storage.local には overlay.ts と型を合わせるため0〜1の小数
+     * （percent / 100）に変換して保存する。
+     */
+    const DEFAULT_OPACITY_PERCENT = 60;
+    const MIN_OPACITY_PERCENT = 10;
+    const MAX_OPACITY_PERCENT = 100;
     const DEFAULT_DISPLAY_MODE = "stack";
     const DEFAULT_STACK_POSITION = "left";
     /**
@@ -47,10 +56,21 @@
         }
         return Math.min(MAX_FONT_SIZE, Math.max(MIN_FONT_SIZE, fontSize));
     }
+    /**
+     * コメントの不透明度（パーセント整数値）を有効範囲内にクランプする。
+     */
+    function clampOpacityPercent(opacityPercent) {
+        if (Number.isNaN(opacityPercent)) {
+            return DEFAULT_OPACITY_PERCENT;
+        }
+        return Math.min(MAX_OPACITY_PERCENT, Math.max(MIN_OPACITY_PERCENT, opacityPercent));
+    }
     function init() {
         const enabledToggle = document.getElementById("enabledToggle");
         const fontSizeRange = document.getElementById("fontSizeRange");
         const fontSizeValue = document.getElementById("fontSizeValue");
+        const opacityRange = document.getElementById("opacityRange");
+        const opacityValue = document.getElementById("opacityValue");
         const displayModeStack = document.getElementById("displayModeStack");
         const displayModeFlow = document.getElementById("displayModeFlow");
         const stackPositionSection = document.getElementById("stackPositionSection");
@@ -59,6 +79,8 @@
         if (!enabledToggle ||
             !fontSizeRange ||
             !fontSizeValue ||
+            !opacityRange ||
+            !opacityValue ||
             !displayModeStack ||
             !displayModeFlow ||
             !stackPositionSection ||
@@ -74,6 +96,7 @@
         chrome.storage.local.get([
             STORAGE_KEY_ENABLED,
             STORAGE_KEY_FONT_SIZE,
+            STORAGE_KEY_OPACITY,
             STORAGE_KEY_DISPLAY_MODE,
             STORAGE_KEY_STACK_POSITION,
         ], (items) => {
@@ -83,11 +106,18 @@
             const fontSize = clampFontSize(typeof items[STORAGE_KEY_FONT_SIZE] === "number"
                 ? items[STORAGE_KEY_FONT_SIZE]
                 : DEFAULT_FONT_SIZE);
+            // storageには0〜1の小数で保存されているため、UI表示用に0〜100のパーセント
+            // 整数値へ変換する（overlay.ts側とのストレージ形式の一致を保つため）。
+            const opacityPercent = clampOpacityPercent(typeof items[STORAGE_KEY_OPACITY] === "number"
+                ? Math.round(items[STORAGE_KEY_OPACITY] * 100)
+                : DEFAULT_OPACITY_PERCENT);
             const displayMode = normalizeDisplayMode(items[STORAGE_KEY_DISPLAY_MODE]);
             const stackPosition = normalizeStackPosition(items[STORAGE_KEY_STACK_POSITION]);
             enabledToggle.checked = enabled;
             fontSizeRange.value = String(fontSize);
             fontSizeValue.textContent = `${fontSize}px`;
+            opacityRange.value = String(opacityPercent);
+            opacityValue.textContent = `${opacityPercent}%`;
             displayModeStack.checked = displayMode === "stack";
             displayModeFlow.checked = displayMode === "flow";
             stackPositionRight.checked = stackPosition === "right";
@@ -103,6 +133,18 @@
             const fontSize = clampFontSize(Number(fontSizeRange.value));
             fontSizeValue.textContent = `${fontSize}px`;
             chrome.storage.local.set({ [STORAGE_KEY_FONT_SIZE]: fontSize });
+        });
+        // 不透明度スライダー操作を保存する
+        // UI上はパーセント整数値だが、overlay.ts側と型を合わせるため
+        // storageには0〜1の小数（percent / 100）に変換して保存する。
+        // 除算結果に浮動小数点演算の丸め誤差が乗る可能性があるため、
+        // 小数第2位で丸めてから保存する（toFixed→Numberで余分な桁を確実に除く）。
+        opacityRange.addEventListener("input", () => {
+            const opacityPercent = clampOpacityPercent(Number(opacityRange.value));
+            opacityValue.textContent = `${opacityPercent}%`;
+            chrome.storage.local.set({
+                [STORAGE_KEY_OPACITY]: Number((opacityPercent / 100).toFixed(2)),
+            });
         });
         // 表示スタイルのラジオボタン操作を保存する
         const handleDisplayModeChange = () => {

@@ -4,7 +4,7 @@
   "description": "YouTube Live・Twitchのライブチャットを配信画面上にオーバーレイ表示します。",
   "version": "1.0.0",
   "permissions": ["storage"],
-  "host_permissions": ["https://www.youtube.com/*"],
+  "host_permissions": ["https://www.youtube.com/*", "https://www.twitch.tv/*"],
   "content_scripts": [
     {
       "matches": ["https://www.youtube.com/watch*"],
@@ -16,6 +16,11 @@
       "js": ["sites/youtube.js"],
       "run_at": "document_idle",
       "all_frames": true
+    },
+    {
+      "matches": ["https://www.twitch.tv/*"],
+      "js": ["overlay.js", "sites/twitch.js"],
+      "run_at": "document_idle"
     }
   ],
   "action": {

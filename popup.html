@@ -78,6 +78,13 @@
     width: 100%;
   }
 
+  .opacity-section {
+    margin-bottom: 16px;
+  }
+  #opacityRange {
+    width: 100%;
+  }
+
   .display-mode-section {
     margin-bottom: 4px;
   }
@@ -135,20 +142,28 @@
   <div class="font-size-section">
     <div class="font-size-header">
       <label for="fontSizeRange">文字サイズ</label>
-      <span id="fontSizeValue">16px</span>
+      <span id="fontSizeValue">22px</span>
     </div>
-    <input type="range" id="fontSizeRange" min="12" max="32" step="1" value="16" />
+    <input type="range" id="fontSizeRange" min="12" max="32" step="1" value="22" />
+  </div>
+
+  <div class="opacity-section">
+    <div class="font-size-header">
+      <label for="opacityRange">コメントの不透明度</label>
+      <span id="opacityValue">60%</span>
+    </div>
+    <input type="range" id="opacityRange" min="10" max="100" step="5" value="60" />
   </div>
 
   <div class="display-mode-section">
     <span>表示スタイル</span>
     <div class="display-mode-option">
-      <input type="radio" name="displayMode" id="displayModeStack" value="stack" />
-      <label for="displayModeStack">積み上げ型</label>
-    </div>
-    <div class="display-mode-option">
       <input type="radio" name="displayMode" id="displayModeFlow" value="flow" />
       <label for="displayModeFlow">横スクロール型</label>
+    </div>
+    <div class="display-mode-option">
+      <input type="radio" name="displayMode" id="displayModeStack" value="stack" />
+      <label for="displayModeStack">積み上げ型</label>
     </div>
   </div>
 

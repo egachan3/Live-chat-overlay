@@ -15,15 +15,26 @@
     /** chrome.storage.local に保存する設定のキー */
     const STORAGE_KEY_ENABLED = "enabled";
     const STORAGE_KEY_FONT_SIZE = "fontSize";
+    const STORAGE_KEY_OPACITY = "opacity";
     const STORAGE_KEY_DISPLAY_MODE = "displayMode";
     const STORAGE_KEY_STACK_POSITION = "stackPosition";
     /** 文字サイズの範囲・デフォルト値 */
     const DEFAULT_ENABLED = true;
-    const DEFAULT_FONT_SIZE = 16;
+    const DEFAULT_FONT_SIZE = 22;
     const MIN_FONT_SIZE = 12;
     const MAX_FONT_SIZE = 32;
+    /**
+     * コメントの不透明度の範囲・デフォルト値。
+     * CSSの opacity プロパティにそのまま使えるよう、内部的には0〜1の小数で保持する
+     * （popup.ts側のUIでは0〜100のパーセント整数値として扱い、保存・読み込み時に変換する）。
+     */
+    const DEFAULT_OPACITY = 0.6;
+    const MIN_OPACITY = 0.1;
+    const MAX_OPACITY = 1;
     const DEFAULT_DISPLAY_MODE = "stack";
     const DEFAULT_STACK_POSITION = "left";
+    /** オーバーレイ本体のz-indexのデフォルト値（サイト側からsetZIndex()で上書きされる） */
+    const DEFAULT_Z_INDEX = 2000;
     /** オーバーレイのDOM要素ID・クラス名 */
     const OVERLAY_WRAPPER_ID = "live-chat-overlay-wrapper";
     const OVERLAY_ROOT_ID = "live-chat-overlay-root";
@@ -32,15 +43,24 @@
     const COMMENT_ITEM_CLASS = "live-chat-overlay-item";
     const FLOW_ITEM_CLASS = "live-chat-overlay-flow-item";
     const STYLE_ELEMENT_ID = "live-chat-overlay-style";
-    /** 流れる型：画面横断にかける固定時間（ミリ秒） */
-    const FLOW_DURATION_MS = 7000;
+    /**
+     * 流れる型：画面横断の移動速度（px/ms）。
+     * 移動時間を固定するのではなく速度を固定することで、文字数（表示幅）に
+     * 関わらず全コメントが同じ速さで流れるようにする（ニコニコ動画の弾幕表示と
+     * 同じ考え方）。0.2px/ms（＝秒速200px）は読みやすさを狙った目安値であり、
+     * 将来的な微調整の余地がある。
+     */
+    const FLOW_SPEED_PX_PER_MS = 0.2;
     /** 流れる型：1行あたりの高さを計算する際の行間係数 */
     const FLOW_LINE_HEIGHT_FACTOR = 1.4;
     /** 現在の設定値（storageから読み込み後に更新される） */
     let currentEnabled = DEFAULT_ENABLED;
     let currentFontSize = DEFAULT_FONT_SIZE;
+    let currentOpacity = DEFAULT_OPACITY;
     let currentDisplayMode = DEFAULT_DISPLAY_MODE;
     let currentStackPosition = DEFAULT_STACK_POSITION;
+    /** オーバーレイ本体のz-index。サイト固有スクリプトからsetZIndex()で更新される想定。 */
+    let currentZIndex = DEFAULT_Z_INDEX;
     /**
      * オーバーレイの位置・サイズ計算の基準となる動画要素。
      * sites/youtube.ts側から setVideoElement() で指定される。
@@ -117,8 +137,12 @@
         /* YouTubeヘッダー（#masthead-container）の z-index: 2020 より低い値にする。
            z-index の数値が明確に異なる場合、CSSの重なり順はDOM順序に関係なく
            数値が大きい方が勝つため、通常コンテンツより上・ヘッダーより下となる
-           値を指定することでヘッダーへの重なりを防ぐ。 */
-        z-index: 2000;
+           値を指定することでヘッダーへの重なりを防ぐ。
+           CSSカスタムプロパティ経由にしているのは、サイト固有スクリプト
+           （sites/twitch.tsなど）がJSのsetZIndex()経由で動的に値を上書きできる
+           ようにするため。Twitchはシアターモード/全画面時のみ動画プレイヤーが
+           前面に出るため、状態に応じてz-indexを切り替える必要がある。 */
+        z-index: var(--live-chat-overlay-z-index, 2000);
         overflow: hidden;
       }
       #${OVERLAY_ROOT_ID} {
@@ -226,10 +250,12 @@
         commentListEl = list;
         flowRootEl = flowRoot;
         applyFontSize(currentFontSize);
+        applyOpacity(currentOpacity);
         applyEnabled(currentEnabled);
         applyVisibility();
         applyDisplayMode(currentDisplayMode);
         applyStackPosition(currentStackPosition);
+        setZIndex(currentZIndex);
         attachOverlayToDom();
         return root;
     }
@@ -415,6 +441,23 @@
         resetOverlayContent();
     }
     /**
+     * オーバーレイ本体（overlayWrapperEl）のz-indexを外部（sites/twitch.tsなど）
+     * から動的に指定する公開API。CSSカスタムプロパティ（--live-chat-overlay-z-index）
+     * としてインラインスタイルに設定することで、<style>要素側のCSSを書き換えずに
+     * 反映できるようにしている。
+     * overlayWrapperElがまだ生成されていないタイミングで呼ばれる可能性があるため、
+     * 他のcurrent○○系設定値と同様にcurrentZIndexとして保持しておき、
+     * createOverlayElement()内でも適用する。
+     */
+    function setZIndex(zIndex) {
+        // 入力値のバリデーション：数値以外・NaN・負数は無視する
+        if (typeof zIndex !== "number" || Number.isNaN(zIndex) || zIndex < 0) {
+            return;
+        }
+        currentZIndex = zIndex;
+        overlayWrapperEl?.style.setProperty("--live-chat-overlay-z-index", String(zIndex));
+    }
+    /**
      * 全画面表示切り替え時のハンドラ。
      * Fullscreen API使用中は通常のDOM子要素が表示されなくなるため、
      * オーバーレイ要素を全画面要素の子として再配置し、座標も再計算する。
@@ -436,6 +479,18 @@
         }
         if (flowRootEl) {
             flowRootEl.style.fontSize = `${fontSize}px`;
+        }
+    }
+    /**
+     * コメントの不透明度をオーバーレイに反映する。
+     */
+    function applyOpacity(opacity) {
+        currentOpacity = opacity;
+        if (commentListEl) {
+            commentListEl.style.opacity = String(opacity);
+        }
+        if (flowRootEl) {
+            flowRootEl.style.opacity = String(opacity);
         }
     }
     /**
@@ -487,6 +542,15 @@
             return DEFAULT_FONT_SIZE;
         }
         return Math.min(MAX_FONT_SIZE, Math.max(MIN_FONT_SIZE, fontSize));
+    }
+    /**
+     * コメントの不透明度を有効範囲内にクランプする。
+     */
+    function clampOpacity(opacity) {
+        if (Number.isNaN(opacity)) {
+            return DEFAULT_OPACITY;
+        }
+        return Math.min(MAX_OPACITY, Math.max(MIN_OPACITY, opacity));
     }
     /**
      * パネルの高さが埋まっている間、古いコメントから削除する。
@@ -577,8 +641,9 @@
     }
     /**
      * 流れる型（弾幕方式）のコメント描画処理。
-     * 画面右端から左端まで固定時間（FLOW_DURATION_MS）で流れるアニメーションを
-     * Web Animations API（Element.animate）で実装する。
+     * 画面右端から左端まで固定速度（FLOW_SPEED_PX_PER_MS）で流れるアニメーションを
+     * Web Animations API（Element.animate）で実装する。移動距離はコメントごとに
+     * 異なる（表示幅が長いほど距離も長い）ため、durationはコメントごとに動的に計算する。
      */
     function addCommentFlow(trimmedText) {
         if (!flowRootEl) {
@@ -598,11 +663,15 @@
         const itemWidth = item.offsetWidth;
         // 開始位置：コンテナ幅分右にオフセット（画面右端の外側からスタート）
         // 終了位置：コメント自身の表示幅分左にオフセット（画面左端の外側まで流れきる）
+        // 移動距離は (containerWidth + itemWidth) で、速度は全コメント共通の
+        // FLOW_SPEED_PX_PER_MS のため、durationはコメントごとの移動距離から動的に計算する。
+        // これにより長文ほど距離は長くなるが速度自体は変わらない（＝長文ほど速くなる問題を解消）。
+        const durationMs = (containerWidth + itemWidth) / FLOW_SPEED_PX_PER_MS;
         const animation = item.animate([
             { transform: `translateX(${containerWidth}px)` },
             { transform: `translateX(-${itemWidth}px)` },
         ], {
-            duration: FLOW_DURATION_MS,
+            duration: durationMs,
             easing: "linear",
             fill: "forwards",
         });
@@ -617,13 +686,15 @@
         });
         // レーンの解放時刻：このコメントの末尾（右端）が、次のコメントのスタート地点
         // （画面右端＝コンテナ右端）を完全に通過し終えるまでの時間を目安に計算する。
-        // 要素は (containerWidth + itemWidth) の距離を FLOW_DURATION_MS かけて移動するので、
-        // 移動速度は speed = (containerWidth + itemWidth) / FLOW_DURATION_MS。
-        // 末尾がスタート地点（画面右端、移動距離 itemWidth の時点）を通過し終えるまでの
-        // 所要時間は itemWidth / speed であり、これを占有時間とすることで、
-        // 表示幅の短いコメントほど早くレーンが解放される（衝突防止の簡易な近似）。
-        const speed = (containerWidth + itemWidth) / FLOW_DURATION_MS;
-        const occupancyMs = speed > 0 ? itemWidth / speed : FLOW_DURATION_MS;
+        // 速度が全コメント共通の定数（FLOW_SPEED_PX_PER_MS）になったため、
+        // 末尾がスタート地点（移動距離 itemWidth の時点）を通過し終えるまでの所要時間は
+        // 単純に itemWidth / FLOW_SPEED_PX_PER_MS で求まる（コメントごとの速度計算が不要になった）。
+        // これにより、この解放時刻以降に出走したコメント同士は、後発が先発に追いつく
+        // ことがなくなる（全コメントが同じ速度で流れるため）。ただし全レーンが
+        // 埋まっている状況では pickFlowLane() が解放前のレーンを選ぶことがあり、
+        // その場合は出走直後に一瞬重なって見えることがある（レーン枯渇時の
+        // トレードオフであり、この修正で解消したのは「速度差による追い越し」のみ）。
+        const occupancyMs = itemWidth / FLOW_SPEED_PX_PER_MS;
         if (laneIndex >= 0 && laneIndex < flowLaneAvailableAt.length) {
             flowLaneAvailableAt[laneIndex] = now + occupancyMs;
         }
@@ -673,6 +744,7 @@
         chrome.storage.local.get([
             STORAGE_KEY_ENABLED,
             STORAGE_KEY_FONT_SIZE,
+            STORAGE_KEY_OPACITY,
             STORAGE_KEY_DISPLAY_MODE,
             STORAGE_KEY_STACK_POSITION,
         ], (items) => {
@@ -682,10 +754,14 @@
             const fontSize = clampFontSize(typeof items[STORAGE_KEY_FONT_SIZE] === "number"
                 ? items[STORAGE_KEY_FONT_SIZE]
                 : DEFAULT_FONT_SIZE);
+            const opacity = clampOpacity(typeof items[STORAGE_KEY_OPACITY] === "number"
+                ? items[STORAGE_KEY_OPACITY]
+                : DEFAULT_OPACITY);
             const displayMode = normalizeDisplayMode(items[STORAGE_KEY_DISPLAY_MODE]);
             const stackPosition = normalizeStackPosition(items[STORAGE_KEY_STACK_POSITION]);
             applyEnabled(enabled);
             applyFontSize(fontSize);
+            applyOpacity(opacity);
             applyDisplayMode(displayMode);
             applyStackPosition(stackPosition);
         });
@@ -705,6 +781,10 @@
             if (changes[STORAGE_KEY_FONT_SIZE]) {
                 const newValue = changes[STORAGE_KEY_FONT_SIZE].newValue;
                 applyFontSize(clampFontSize(typeof newValue === "number" ? newValue : DEFAULT_FONT_SIZE));
+            }
+            if (changes[STORAGE_KEY_OPACITY]) {
+                const newValue = changes[STORAGE_KEY_OPACITY].newValue;
+                applyOpacity(clampOpacity(typeof newValue === "number" ? newValue : DEFAULT_OPACITY));
             }
             if (changes[STORAGE_KEY_DISPLAY_MODE]) {
                 applyDisplayMode(normalizeDisplayMode(changes[STORAGE_KEY_DISPLAY_MODE].newValue));
@@ -737,5 +817,6 @@
         addComment,
         setVideoElement,
         resetForNewStream,
+        setZIndex,
     };
 })();
