@@ -63,10 +63,10 @@
         }
     }
     /**
-     * メッセージ本文要素の子ノードを走査し、テキストノードとエモート画像を
-     * 出現順に連結して本文文字列を組み立てる。
-     * 単純に textContent を使うと <img> のエモート表現（alt属性）が失われるため、
-     * ノード種別ごとに個別に処理する。
+     * メッセージ本文要素の子ノードを走査し、テキストノードのみを出現順に連結して
+     * 本文文字列を組み立てる。
+     * <img>要素（エモート）は無視する。エモートのみで構成されたコメントは
+     * 本文が空文字になり、extractComment側で自然に非表示（null）扱いとなる。
      */
     function extractBodyText(bodyEl) {
         let text = "";
@@ -75,7 +75,7 @@
                 text += node.textContent ?? "";
             }
             else if (node instanceof HTMLImageElement) {
-                text += node.alt ?? "";
+                // エモート画像は無視する（altテキストは表示しない）
             }
             else if (node instanceof Element) {
                 // 想定外の要素（装飾用span等）が挟まる場合に備え、再帰的に処理する

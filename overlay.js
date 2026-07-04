@@ -44,6 +44,12 @@
     const FLOW_ITEM_CLASS = "live-chat-overlay-flow-item";
     const STYLE_ELEMENT_ID = "live-chat-overlay-style";
     /**
+     * コメント要素のフォントファミリー。CSS（.${COMMENT_ITEM_CLASS} / .${FLOW_ITEM_CLASS}）と
+     * measureTextWidth() の両方でこの定数を参照することで、CSS側だけ変更してcanvas側の
+     * 計測用フォント指定が追従し忘れる（計測値と実描画幅がズレる）ドリフトを防ぐ。
+     */
+    const COMMENT_FONT_FAMILY = "sans-serif";
+    /**
      * 流れる型：画面横断の移動速度（px/ms）。
      * 移動時間を固定するのではなく速度を固定することで、文字数（表示幅）に
      * 関わらず全コメントが同じ速さで流れるようにする（ニコニコ動画の弾幕表示と
@@ -53,6 +59,35 @@
     const FLOW_SPEED_PX_PER_MS = 0.2;
     /** 流れる型：1行あたりの高さを計算する際の行間係数 */
     const FLOW_LINE_HEIGHT_FACTOR = 1.4;
+    /**
+     * 流れる型のコメント幅を事前計測するための、DOMに追加しない専用canvas。
+     * measureTextWidth() 専用に一度だけ生成して使い回す（毎回生成すると無駄なため）。
+     */
+    const textMeasureCanvas = document.createElement("canvas");
+    const textMeasureCtx = textMeasureCanvas.getContext("2d");
+    /**
+     * Canvas 2D APIの measureText() を使い、指定テキストの表示幅を事前計算する。
+     * 従来はDOMに要素を追加した直後に offsetWidth を読み取っていたが、この方式は
+     * ブラウザに強制的な同期レイアウト計算（forced synchronous layout）を発生させ、
+     * コメントが大量に届く場面でメインスレッドを圧迫しカクつきの原因になっていた。
+     * measureText() はレイアウトを介さずに幅を計算できるため、この問題を回避できる。
+     *
+     * ctx.font には .${FLOW_ITEM_CLASS} に適用されているCSSのフォント指定
+     * （font-family: sans-serif、フォントサイズは呼び出し元が渡すpx値）と
+     * 一致する値を設定し、実際の描画幅とのズレを最小限にしている。
+     * ただしCanvasでの計測値とDOMでの実際の描画幅には多少の誤差が生じ得るが、
+     * 視覚的な影響はコメントが画面外へ消えるタイミングが多少前後する程度で軽微であり、
+     * 許容範囲としている。
+     */
+    function measureTextWidth(text, fontSize) {
+        if (!textMeasureCtx) {
+            // Canvas 2D コンテキストが取得できない環境では計測不能なため、
+            // フォールバックとして文字数からの粗い概算値を返す。
+            return text.length * fontSize;
+        }
+        textMeasureCtx.font = `${fontSize}px ${COMMENT_FONT_FAMILY}`;
+        return textMeasureCtx.measureText(text).width;
+    }
     /** 現在の設定値（storageから読み込み後に更新される） */
     let currentEnabled = DEFAULT_ENABLED;
     let currentFontSize = DEFAULT_FONT_SIZE;
@@ -200,7 +235,7 @@
           1px -1px 0 #000,
           -1px 1px 0 #000,
           1px 1px 0 #000;
-        font-family: sans-serif;
+        font-family: ${COMMENT_FONT_FAMILY};
         line-height: 1.4;
         word-break: break-word;
         margin-top: 2px;
@@ -215,7 +250,7 @@
           1px -1px 0 #000,
           -1px 1px 0 #000,
           1px 1px 0 #000;
-        font-family: sans-serif;
+        font-family: ${COMMENT_FONT_FAMILY};
         will-change: transform;
       }
     `;
@@ -653,14 +688,16 @@
         if (containerWidth <= 0) {
             return;
         }
+        // DOM追加前にCanvasのmeasureText()で表示幅を計算する。DOM追加直後に
+        // offsetWidthを読む方式は強制的な同期レイアウト計算を発生させ、コメントが
+        // 大量に届く場面でカクつきの原因になっていたため、この方式に変更した。
+        const itemWidth = measureTextWidth(trimmedText, currentFontSize);
         const item = buildCommentElement(FLOW_ITEM_CLASS, trimmedText);
         flowRootEl.appendChild(item);
         const now = performance.now();
         const laneIndex = pickFlowLane(now);
         const lineHeight = currentFontSize * FLOW_LINE_HEIGHT_FACTOR;
         item.style.top = `${laneIndex * lineHeight}px`;
-        // DOM追加直後でないと offsetWidth が正しく測れないため、appendChild後に計測する
-        const itemWidth = item.offsetWidth;
         // 開始位置：コンテナ幅分右にオフセット（画面右端の外側からスタート）
         // 終了位置：コメント自身の表示幅分左にオフセット（画面左端の外側まで流れきる）
         // 移動距離は (containerWidth + itemWidth) で、速度は全コメント共通の
