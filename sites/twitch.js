@@ -24,6 +24,17 @@
     const CHAT_AUTHOR_SELECTOR = '[data-a-target="chat-message-username"]';
     /** メッセージ本文の要素のセレクタ（テキストとエモート画像が混在する） */
     const CHAT_BODY_SELECTOR = '[data-a-target="chat-line-message-body"]';
+    /** 録画（VOD）ページのチャットメッセージ一覧のコンテナのセレクタ */
+    const VOD_CHAT_CONTAINER_SELECTOR = ".video-chat__message-list-wrapper";
+    /** 録画（VOD）ページのメッセージ1件の要素のセレクタ */
+    const VOD_CHAT_MESSAGE_SELECTOR = ".vod-message";
+    /**
+     * 本文の断片テキストの要素のセレクタ。ライブ配信・録画の両方の本文内に存在する
+     * （実機で確認済み）。録画ページではCHAT_BODY_SELECTORに相当する
+     * 「本文全体を包む1つの要素」が存在しないため、このセレクタで断片を集めて
+     * 連結する必要がある。
+     */
+    const CHAT_TEXT_FRAGMENT_SELECTOR = '[data-a-target="chat-message-text"]';
     /**
      * シアターモード中の動画プレイヤーコンテナに付与されるクラス名（実機で確認済み）。
      * 通常モードでは一致する要素が存在せず、シアターモードONで出現する。
@@ -86,20 +97,43 @@
     }
     /**
      * コメント要素から投稿者名・本文テキストを抽出する。
-     * 本文要素が見つからない場合は null を返す。
+     * 本文が抽出できない場合は null を返す。
+     *
+     * ライブ配信ではCHAT_BODY_SELECTORで本文全体を包む要素が1つ見つかるため、
+     * それをextractBodyTextで処理する。録画（VOD）ページにはその要素が存在しない
+     * ため、フォールバックとしてCHAT_TEXT_FRAGMENT_SELECTORに一致する断片スパンを
+     * すべて集めて連結する（エモート画像や区切り文字":"のspanはdata-a-target属性を
+     * 持たないため、この方法で自動的に除外される）。
      */
     function extractComment(el) {
         const authorEl = el.querySelector(CHAT_AUTHOR_SELECTOR);
-        const bodyEl = el.querySelector(CHAT_BODY_SELECTOR);
-        if (!bodyEl) {
-            return null;
-        }
         const author = authorEl?.textContent?.trim() ?? "";
-        const text = extractBodyText(bodyEl).trim();
+        const bodyEl = el.querySelector(CHAT_BODY_SELECTOR);
+        let text;
+        if (bodyEl) {
+            text = extractBodyText(bodyEl).trim();
+        }
+        else {
+            const fragmentEls = el.querySelectorAll(CHAT_TEXT_FRAGMENT_SELECTOR);
+            let fragmentText = "";
+            fragmentEls.forEach((fragmentEl) => {
+                fragmentText += fragmentEl.textContent ?? "";
+            });
+            text = fragmentText.trim();
+        }
         if (text.length === 0) {
             return null;
         }
         return { author, text };
+    }
+    /**
+     * 指定セレクタについて、ノード自身または子孫がそのセレクタに一致する要素を
+     * すべて集めて返す。
+     */
+    function collectMatchingElements(node, selector) {
+        return node.matches(selector)
+            ? [node]
+            : Array.from(node.querySelectorAll(selector));
     }
     /**
      * MutationObserver が検知した追加ノードを処理する。
@@ -110,14 +144,19 @@
      * そのため「ノード自身が一致するか」だけでなく「子孫に一致する要素があるか」も
      * チェックする必要がある。1コメントにつき1回だけラッパーdivの追加が検知される
      * ことも確認済みのため、重複除去ロジックは不要。
+     *
+     * ライブ配信用（CHAT_MESSAGE_SELECTOR）と録画（VOD）用（VOD_CHAT_MESSAGE_SELECTOR）
+     * の両方のセレクタで判定する。両ページが同一DOM内に混在することはないが、
+     * 念のためSetで重複を除去してから処理する。
      */
     function handleAddedNode(node) {
         if (!(node instanceof Element)) {
             return;
         }
-        const messageEls = node.matches(CHAT_MESSAGE_SELECTOR)
-            ? [node]
-            : Array.from(node.querySelectorAll(CHAT_MESSAGE_SELECTOR));
+        const messageEls = new Set([
+            ...collectMatchingElements(node, CHAT_MESSAGE_SELECTOR),
+            ...collectMatchingElements(node, VOD_CHAT_MESSAGE_SELECTOR),
+        ]);
         for (const messageEl of messageEls) {
             const comment = extractComment(messageEl);
             if (comment && typeof window.LiveChatOverlay?.addComment === "function") {
@@ -166,9 +205,13 @@
     /**
      * チャットメッセージコンテナが見つかれば、そのコンテナに対するコメント監視を
      * 開始する。すでに同じ要素を監視中であれば何もしない。
+     *
+     * ライブ配信用のコンテナが見つかればそちらを優先し、見つからない場合は
+     * 録画（VOD）ページ用のコンテナにフォールバックする。
      */
     function ensureChatContainerObserved() {
-        const containerEl = document.querySelector(CHAT_CONTAINER_SELECTOR);
+        const containerEl = document.querySelector(CHAT_CONTAINER_SELECTOR) ??
+            document.querySelector(VOD_CHAT_CONTAINER_SELECTOR);
         if (!containerEl || containerEl === observedChatContainerEl) {
             return;
         }
