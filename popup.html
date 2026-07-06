@@ -2,36 +2,76 @@
 <html lang="ja">
 <head>
 <meta charset="UTF-8" />
-<title>ライブチャットオーバーレイ設定</title>
+<title>Stream Danmaku Overlay 設定</title>
 <style>
+  :root {
+    --accent-from: #e11d48;
+    --accent-to: #7c3aed;
+    --accent: #7c3aed;
+    --text: #1f2430;
+    --text-muted: #6b7280;
+    --card-bg: #f7f7fb;
+    --card-border: #e7e7f0;
+  }
+  * {
+    box-sizing: border-box;
+  }
   body {
     margin: 0;
-    padding: 16px;
-    width: 240px;
-    font-family: sans-serif;
-    font-size: 14px;
-    color: #222;
+    padding: 0;
+    width: 260px;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    font-size: 13px;
+    color: var(--text);
+    background: #ffffff;
   }
-  h1 {
-    font-size: 14px;
-    margin: 0 0 12px;
+
+  /* ヘッダー：グラデーション背景＋インラインSVGアイコン（画像ファイルを使わず容量を抑える） */
+  header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 14px 16px;
+    background: linear-gradient(135deg, var(--accent-from), var(--accent-to));
+    color: #ffffff;
   }
+  header svg {
+    flex-shrink: 0;
+  }
+  header h1 {
+    font-size: 13px;
+    font-weight: 700;
+    margin: 0;
+    letter-spacing: 0.02em;
+  }
+
+  main {
+    padding: 14px 16px 16px;
+  }
+
+  .card {
+    background: var(--card-bg);
+    border: 1px solid var(--card-border);
+    border-radius: 10px;
+    padding: 12px;
+    margin-bottom: 10px;
+  }
+
   .row {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    margin-bottom: 16px;
   }
-  .row label {
-    font-weight: bold;
+  .row .row-label {
+    font-weight: 600;
   }
 
   /* トグルスイッチ */
   .switch {
     position: relative;
     display: inline-block;
-    width: 40px;
-    height: 22px;
+    width: 38px;
+    height: 21px;
     flex-shrink: 0;
   }
   .switch input {
@@ -43,141 +83,197 @@
     position: absolute;
     cursor: pointer;
     inset: 0;
-    background-color: #ccc;
+    background-color: #d1d5db;
     border-radius: 999px;
-    transition: background-color 0.15s;
+    transition: background 0.15s;
   }
   .switch .slider::before {
     content: "";
     position: absolute;
-    width: 16px;
-    height: 16px;
+    width: 15px;
+    height: 15px;
     left: 3px;
     top: 3px;
     background-color: #fff;
     border-radius: 50%;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
     transition: transform 0.15s;
   }
   .switch input:checked + .slider {
-    background-color: #4caf50;
+    background: linear-gradient(135deg, var(--accent-from), var(--accent-to));
   }
   .switch input:checked + .slider::before {
-    transform: translateX(18px);
+    transform: translateX(17px);
   }
 
-  .font-size-section {
-    margin-bottom: 16px;
-  }
-  .font-size-header {
+  .section-header {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    margin-bottom: 4px;
+    margin-bottom: 8px;
   }
-  #fontSizeRange {
-    width: 100%;
+  .section-header .row-label {
+    font-weight: 600;
+  }
+  .section-header .value-badge {
+    font-size: 11px;
+    font-weight: 700;
+    color: var(--accent);
+    background: #ffffff;
+    border: 1px solid var(--card-border);
+    border-radius: 999px;
+    padding: 1px 8px;
+    min-width: 34px;
+    text-align: center;
   }
 
-  .opacity-section {
-    margin-bottom: 16px;
-  }
-  #opacityRange {
+  /* レンジスライダー：トラック・つまみをカスタム描画してリッチに見せる */
+  input[type="range"] {
     width: 100%;
+    appearance: none;
+    -webkit-appearance: none;
+    height: 4px;
+    border-radius: 999px;
+    background: linear-gradient(135deg, var(--accent-from), var(--accent-to));
+    outline: none;
+    margin: 0;
+  }
+  input[type="range"]::-webkit-slider-thumb {
+    appearance: none;
+    -webkit-appearance: none;
+    width: 15px;
+    height: 15px;
+    border-radius: 50%;
+    background: #ffffff;
+    border: 2px solid var(--accent);
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+    cursor: pointer;
+  }
+  input[type="range"]::-moz-range-thumb {
+    width: 15px;
+    height: 15px;
+    border-radius: 50%;
+    background: #ffffff;
+    border: 2px solid var(--accent);
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+    cursor: pointer;
   }
 
-  .display-mode-section {
-    margin-bottom: 4px;
-  }
-  .display-mode-section > span {
-    font-weight: bold;
+  .section-title {
+    font-weight: 600;
     display: block;
-    margin-bottom: 4px;
+    margin-bottom: 8px;
   }
-  .display-mode-option {
+
+  /* 表示スタイル・表示位置：ラジオボタンをピル型のセグメントボタンに見せる */
+  .segmented {
     display: flex;
-    align-items: center;
     gap: 6px;
-    margin-bottom: 4px;
   }
-  .display-mode-option label {
-    font-weight: normal;
+  .segmented-option {
+    flex: 1;
+  }
+  .segmented-option input {
+    position: absolute;
+    opacity: 0;
+    width: 0;
+    height: 0;
+  }
+  .segmented-option label {
+    display: block;
+    text-align: center;
+    padding: 6px 4px;
+    border-radius: 999px;
+    border: 1px solid var(--card-border);
+    background: #ffffff;
+    color: var(--text-muted);
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s, border-color 0.15s;
+    white-space: nowrap;
+  }
+  .segmented-option input:checked + label {
+    background: linear-gradient(135deg, var(--accent-from), var(--accent-to));
+    border-color: transparent;
+    color: #ffffff;
   }
 
   .stack-position-section {
-    margin-bottom: 4px;
     transition: opacity 0.15s;
   }
-  .stack-position-section > span {
-    font-weight: bold;
-    display: block;
-    margin-bottom: 4px;
-  }
-  .stack-position-option {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    margin-bottom: 4px;
-  }
-  .stack-position-option label {
-    font-weight: normal;
-  }
-  /* 流れる型選択中は、積み上げ型専用の設定であることが分かるようグレーアウトする */
   .stack-position-section.stack-position-disabled {
     opacity: 0.4;
     pointer-events: none;
   }
+
+  .card:last-child {
+    margin-bottom: 0;
+  }
 </style>
 </head>
 <body>
-  <h1>ライブチャットオーバーレイ</h1>
+  <header>
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+      <rect x="2" y="4" width="20" height="14" rx="4" fill="#ffffff" fill-opacity="0.18" />
+      <path d="M6 9h8M6 12.5h5" stroke="#ffffff" stroke-width="1.6" stroke-linecap="round" />
+      <path d="M8 21l3-3h2l3 3" stroke="#ffffff" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
+    </svg>
+    <h1>Stream Danmaku Overlay</h1>
+  </header>
 
-  <div class="row">
-    <span>表示ON/OFF</span>
-    <label class="switch">
-      <input type="checkbox" id="enabledToggle" />
-      <span class="slider"></span>
-    </label>
-  </div>
+  <main>
+    <div class="card row">
+      <span class="row-label">表示ON/OFF</span>
+      <label class="switch">
+        <input type="checkbox" id="enabledToggle" />
+        <span class="slider"></span>
+      </label>
+    </div>
 
-  <div class="font-size-section">
-    <div class="font-size-header">
-      <label for="fontSizeRange">文字サイズ</label>
-      <span id="fontSizeValue">22px</span>
+    <div class="card">
+      <div class="section-header">
+        <label class="row-label" for="fontSizeRange">文字サイズ</label>
+        <span class="value-badge" id="fontSizeValue">22px</span>
+      </div>
+      <input type="range" id="fontSizeRange" min="12" max="32" step="1" value="22" />
     </div>
-    <input type="range" id="fontSizeRange" min="12" max="32" step="1" value="22" />
-  </div>
 
-  <div class="opacity-section">
-    <div class="font-size-header">
-      <label for="opacityRange">コメントの不透明度</label>
-      <span id="opacityValue">60%</span>
+    <div class="card">
+      <div class="section-header">
+        <label class="row-label" for="opacityRange">コメントの不透明度</label>
+        <span class="value-badge" id="opacityValue">60%</span>
+      </div>
+      <input type="range" id="opacityRange" min="10" max="100" step="5" value="60" />
     </div>
-    <input type="range" id="opacityRange" min="10" max="100" step="5" value="60" />
-  </div>
 
-  <div class="display-mode-section">
-    <span>表示スタイル</span>
-    <div class="display-mode-option">
-      <input type="radio" name="displayMode" id="displayModeFlow" value="flow" />
-      <label for="displayModeFlow">横スクロール型</label>
+    <div class="card">
+      <span class="section-title">表示スタイル</span>
+      <div class="segmented">
+        <div class="segmented-option">
+          <input type="radio" name="displayMode" id="displayModeFlow" value="flow" />
+          <label for="displayModeFlow">横スクロール型</label>
+        </div>
+        <div class="segmented-option">
+          <input type="radio" name="displayMode" id="displayModeStack" value="stack" />
+          <label for="displayModeStack">積み上げ型</label>
+        </div>
+      </div>
     </div>
-    <div class="display-mode-option">
-      <input type="radio" name="displayMode" id="displayModeStack" value="stack" />
-      <label for="displayModeStack">積み上げ型</label>
-    </div>
-  </div>
 
-  <div class="stack-position-section" id="stackPositionSection">
-    <span>表示位置（積み上げ型）</span>
-    <div class="stack-position-option">
-      <input type="radio" name="stackPosition" id="stackPositionLeft" value="left" />
-      <label for="stackPositionLeft">動画の左側</label>
+    <div class="card stack-position-section" id="stackPositionSection">
+      <span class="section-title">表示位置（積み上げ型）</span>
+      <div class="segmented">
+        <div class="segmented-option">
+          <input type="radio" name="stackPosition" id="stackPositionLeft" value="left" />
+          <label for="stackPositionLeft">動画の左側</label>
+        </div>
+        <div class="segmented-option">
+          <input type="radio" name="stackPosition" id="stackPositionRight" value="right" />
+          <label for="stackPositionRight">動画の右側</label>
+        </div>
+      </div>
     </div>
-    <div class="stack-position-option">
-      <input type="radio" name="stackPosition" id="stackPositionRight" value="right" />
-      <label for="stackPositionRight">動画の右側</label>
-    </div>
-  </div>
+  </main>
 
   <script src="popup.js"></script>
 </body>
