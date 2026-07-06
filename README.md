@@ -29,17 +29,17 @@ Settings are stored only on your device (chrome.storage.local); nothing is sent 
 
 ## スクリーンショット
 
-### 横スクロール型（弾幕表示）
-
-コメントが右から左へ画面を横切って流れる、ニコニコ動画の弾幕表示に近いスタイル。
-
-![横スクロール型の表示例](docs/images/screenshot-flow-mode.png)
-
 ### 積み上げ型
 
 コメントが画面端に下から積み上がっていく、ネイティブのチャット欄に近いスタイル。
 
 ![積み上げ型の表示例](docs/images/screenshot-stack-mode.png)
+
+### 横スクロール型（弾幕表示）
+
+コメントが右から左へ画面を横切って流れる、ニコニコ動画の弾幕表示に近いスタイル。
+
+![横スクロール型の表示例](docs/images/screenshot-flow-mode.png)
 
 ### 設定ポップアップ
 
@@ -47,7 +47,7 @@ Settings are stored only on your device (chrome.storage.local); nothing is sent 
 
 ![設定ポップアップの画面](docs/images/screenshot-popup.png)
 
-スクリーンショットの配信画面は以下より引用しています。
+スクリーンショットの配信画面は以下より引用させていただいてます。
 
 - https://www.twitch.tv/gon_vl
 - https://www.twitch.tv/gon_vl/clip/FuriousAlertTofuSoBayed-zvGWQo2eSK3wJsDi
