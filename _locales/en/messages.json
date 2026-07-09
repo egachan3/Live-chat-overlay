@@ -1,0 +1,10 @@
+{
+  "extName": {
+    "message": "Stream Danmaku Overlay",
+    "description": "Extension name"
+  },
+  "extDescription": {
+    "message": "Overlays YouTube Live and Twitch live chat comments on the stream in a danmaku style.",
+    "description": "Extension description"
+  }
+}
