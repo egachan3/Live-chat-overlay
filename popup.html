@@ -209,6 +209,19 @@
   .card:last-child {
     margin-bottom: 0;
   }
+
+  .feedback-link {
+    display: block;
+    text-align: center;
+    margin-top: 12px;
+    font-size: 12px;
+    color: var(--text-muted);
+    text-decoration: none;
+  }
+  .feedback-link:hover {
+    color: var(--accent);
+    text-decoration: underline;
+  }
 </style>
 </head>
 <body>
@@ -273,6 +286,14 @@
         </div>
       </div>
     </div>
+
+    <a
+      class="feedback-link"
+      href="https://forms.gle/N2UCgSfa6JucbHq19"
+      target="_blank"
+      rel="noopener noreferrer"
+      >不具合を報告 / Report a bug</a
+    >
   </main>
 
   <script src="popup.js"></script>
