@@ -47,7 +47,12 @@ Settings are stored only on your device (chrome.storage.local); nothing is sent 
 
 表示ON/OFF・文字サイズ・不透明度・表示スタイルの切り替えを1画面で操作できる。
 
-![設定ポップアップの画面](docs/images/screenshot-popup.png)
+<table>
+  <tr>
+    <td align="center"><img src="docs/images/screenshot-popup.png" width="260" alt="設定ポップアップの画面（日本語）" /></td>
+    <td align="center"><img src="docs/images/screenshot-popup-en.png" width="260" alt="Settings popup (English)" /></td>
+  </tr>
+</table>
 
 スクリーンショットの配信画面は以下より引用させていただいてます。
 
