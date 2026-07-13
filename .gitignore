@@ -3,3 +3,5 @@ node_modules/
 dist/
 *.zip
 .DS_Store
+.claude/playwright-mcp-config.json
+.claude/playwright-profile/
